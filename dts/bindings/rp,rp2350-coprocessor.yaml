@@ -1,0 +1,6 @@
+description: |
+    IP fifo instance
+
+compatible: "rp,rp2350-coprocessor"
+
+include: base.yaml
