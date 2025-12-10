@@ -1,11 +1,5 @@
 / {
-	compatible {
-		rp2350_coprocessor = "rp,rp2350-coprocessor";
-	};
-};
-
-/* Define the RP2350 IP FIFO hardware block */
-&soc {
+  soc {
 	coprocessor: coprocessor@d0000050 {
 		/* Base address is SIO_BASE (0xd0000000) + first register offset (0x50) */
 		compatible = "rp,rp2350-coprocessor";
@@ -17,7 +11,8 @@
 		label = "RP2350_COPROCESSOR";
 
 		/* IRQ for FIFO status change (Interrupt 25 for SIO/Inter-core Comm) */
-		interrupts = <25 IRQ_DEFAULT_FLAGS>;
-		status = "disabled"; /* Enabled via DTS overlay for application */
+		interrupts = <25 0>;
+		status = "okay";
 	};
+  };
 };

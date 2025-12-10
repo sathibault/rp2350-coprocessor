@@ -1,14 +1,6 @@
 if(CONFIG_RP2350_COPROCESSOR)
-    add_library(rp2350_coprocessor INTERFACE)
-    target_sources(rp2350_coprocessor INTERFACE
-        src/rp2350_fifo.c
-    )
-    target_include_directories(rp2350_coprocessor INTERFACE
-        include
-    )
-    target_link_libraries(rp2350_coprocessor INTERFACE
-        zephyr::kernel
-        zephyr::drivers
-    )
-
+zephyr_library()
+zephyr_syscall_header(${ZEPHYR_RP2350_COPROCESSOR_MODULE_DIR}/include/rp2350_coprocessor.h)
+zephyr_include_directories(include)
+zephyr_library_sources(src/rp2350_coprocessor.c src/picocore.c)
 endif()
