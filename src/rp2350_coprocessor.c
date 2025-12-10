@@ -12,10 +12,13 @@
 #include <zephyr/init.h>
 #include <zephyr/irq.h>
 #include <zephyr/logging/log.h>
-#include <zephyr/dt-bindings/interrupt-controller/arm-gic.h>
-#include <zephyr/syscall_handler.h> // Mandatory for defining syscall handlers
 
 #include "rp2350_coprocessor.h"
+
+extern bool multicore_fifo_pop(uint32_t *data);
+extern void multicore_fifo_push_blocking(uint32_t data);
+extern uint32_t multicore_fifo_pop_blocking(void);
+extern void multicore_launch_core1_with_stack(void (*entry)(void), uint32_t *stack_bottom, size_t stack_size_bytes);
 
 LOG_MODULE_REGISTER(rp2350_coprocessor, CONFIG_RP2350_COPROCESSOR_LOG_LEVEL);
 
@@ -41,8 +44,8 @@ struct rp2350_coprocessor_regs {
 /* --- Driver Context and Configuration Structures --- */
 
 struct rp2350_coprocessor_data {
-    struct k_mutex lock;
-    // Add other dynamic data here
+  struct k_mutex lock;
+  uint32_t *stack;
 };
 
 struct rp2350_coprocessor_config {
@@ -58,19 +61,9 @@ struct rp2350_coprocessor_config {
  */
 static int rp2350_coprocessor_push_impl(const struct device *dev, uint32_t data)
 {
-    const struct rp2350_coprocessor_config *cfg = dev->config;
-
     k_mutex_lock(&((struct rp2350_coprocessor_data *)dev->data)->lock, K_FOREVER);
 
-    // Check if the FIFO is full
-    if (cfg->base->status_ctrl & RP2350_COPROCESSOR_STATUS_FULL_BIT) {
-        LOG_WRN("FIFO is full, failed to push data 0x%x", data);
-        k_mutex_unlock(&((struct rp2350_coprocessor_data *)dev->data)->lock);
-        return -EAGAIN;
-    }
-
-    // Write the data to the write register (Privileged access)
-    cfg->base->write = data;
+    multicore_fifo_push_blocking(data);
 
     k_mutex_unlock(&((struct rp2350_coprocessor_data *)dev->data)->lock);
     LOG_DBG("Pushed data: 0x%x", data);
@@ -83,29 +76,39 @@ static int rp2350_coprocessor_push_impl(const struct device *dev, uint32_t data)
  */
 static int rp2350_coprocessor_pop_impl(const struct device *dev, uint32_t *data)
 {
-    const struct rp2350_coprocessor_config *cfg = dev->config;
-    int ret = 0;
-
+  int ret = 0;
+  
     k_mutex_lock(&((struct rp2350_coprocessor_data *)dev->data)->lock, K_FOREVER);
 
-    // Check if the FIFO is empty
-    if (cfg->base->status_ctrl & RP2350_COPROCESSOR_STATUS_EMPTY_BIT) {
-        LOG_DBG("FIFO is empty.");
-        ret = -EAGAIN;
-        goto unlock_and_exit;
-    }
+    if (!multicore_fifo_pop(data))
+	ret = -EAGAIN;
 
-    // Read the data from the read register (Privileged access)
-    *data = cfg->base->read;
-
-    // Acknowledge the read (if required by hardware, often done via a specific register write)
-    // cfg->base->status_ctrl = RP2350_COPROCESSOR_READ_ACK_MASK;
-
+    k_mutex_unlock(&((struct rp2350_coprocessor_data *)dev->data)->lock);
     LOG_DBG("Popped data: 0x%x", *data);
 
-unlock_and_exit:
-    k_mutex_unlock(&((struct rp2350_coprocessor_data *)dev->data)->lock);
     return ret;
+}
+
+static int rp2350_coprocessor_launch_impl(const struct device *dev, void (*entry)(void)) {
+  int ret = 0;
+  struct rp2350_coprocessor_data *data = dev->data;
+
+  k_mutex_lock(&data->lock, K_FOREVER);
+
+  if (data->stack == NULL) {
+    data->stack = k_malloc(0x200);
+    if (data->stack == NULL) {
+      ret = -ENOMEM;
+      goto unlock_and_exit;
+    }
+  }
+  
+  multicore_launch_core1_with_stack(entry, data->stack, 0x200);
+  LOG_DBG("Launched: %p", (void *)entry);
+
+unlock_and_exit:
+  k_mutex_unlock(&data->lock);
+  return ret;
 }
 
 /* Placeholder for the Interrupt Service Routine (ISR) - MUST run in Secure/Privileged Mode */
@@ -130,70 +133,39 @@ static int rp2350_coprocessor_init(const struct device *dev)
 
     // Initialize context data
     k_mutex_init(&data->lock);
+    data->stack = NULL;
 
     // 1. Hardware initialization (Privileged access)
 
     // 2. Configure and enable interrupt (if enabled in DTS)
-    if (cfg->irq_config_func) {
-        cfg->irq_config_func(dev);
-    }
+    //    if (cfg->irq_config_func) {
+    //        cfg->irq_config_func(dev);
+    //    }
     
     return 0;
 }
 
 
-/* --- System Call Definition Block --- */
-
-/* 1. Define the system call implementations (z_impl_) */
-
-#ifdef CONFIG_USERSPACE
-
-/* System call handler for rp2350_coprocessor_push */
-FUNC_ALIAS(rp2350_coprocessor_push_impl, z_impl_rp2350_coprocessor_push);
-/* This ensures the public API is accessible even if CONFIG_USERSPACE is not set */
-#else
-static int z_impl_rp2350_coprocessor_push(const struct device *dev, uint32_t data)
+int z_impl_rp2350_coprocessor_push(const struct device *dev, uint32_t data)
 {
     return rp2350_coprocessor_push_impl(dev, data);
 }
-#endif /* CONFIG_USERSPACE */
 
-/* System call handler for rp2350_coprocessor_pop */
-#ifdef CONFIG_USERSPACE
-static int z_impl_rp2350_coprocessor_pop(const struct device *dev, uint32_t *data)
-{
-    // Important: Validate that the pointer 'data' is valid for writing in userspace
-    Z_OOPS(z_user_from_kernel_generic_to_rw(data, sizeof(uint32_t)));
-    return rp2350_coprocessor_pop_impl(dev, data);
-}
-#else
-static int z_impl_rp2350_coprocessor_pop(const struct device *dev, uint32_t *data)
+int z_impl_rp2350_coprocessor_pop(const struct device *dev, uint32_t *data)
 {
     return rp2350_coprocessor_pop_impl(dev, data);
 }
-#endif /* CONFIG_USERSPACE */
 
-/* 2. Link the system call implementation to the public API declaration */
-/* This is necessary to create the system call table entry */
-K_SYSCALL_DEFINE2(rp2350_coprocessor_push, const struct device *, dev, uint32_t, data)
-{
-    return z_impl_rp2350_coprocessor_push(dev, data);
+int z_impl_rp2350_coprocessor_launch(const struct device *dev, coprocessor_entry_t entry) {
+  return rp2350_coprocessor_launch_impl(dev, entry);
 }
 
-K_SYSCALL_DEFINE2(rp2350_coprocessor_pop, const struct device *, dev, uint32_t *, data)
-{
-    return z_impl_rp2350_coprocessor_pop(dev, data);
-}
-
-
-/* 3. Define the driver API structure to link to the privileged implementations */
 static const struct rp2350_coprocessor_driver_api rp2350_coprocessor_api = {
     .push = z_impl_rp2350_coprocessor_push,
     .pop = z_impl_rp2350_coprocessor_pop,
 };
 
 
-/* 4. Interrupt configuration using DTS_INST macros */
 #define RP2350_COPROCESSOR_IRQ_CONFIG(inst)                                  \
     static void rp2350_coprocessor_irq_config_##inst(const struct device *dev) \
     {                                                                 \
@@ -204,7 +176,6 @@ static const struct rp2350_coprocessor_driver_api rp2350_coprocessor_api = {
         irq_enable(DT_INST_IRQN(inst));                               \
     }
 
-/* 5. Define the device instance using DTS_INST macros */
 #define RP2350_COPROCESSOR_DEFINE(inst)                                      \
     RP2350_COPROCESSOR_IRQ_CONFIG(inst)                                      \
     static struct rp2350_coprocessor_data rp2350_coprocessor_data_##inst;           \

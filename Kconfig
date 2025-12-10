@@ -1,16 +1,17 @@
-menu "RP2350 Inter-Processor FIFO Drivers"
+menu "RP2350 Coprocessor Driver"
 
 config RP2350_COPROCESSOR
-bool "RP2350 IP FIFO Inter-Processor Communication"
+bool "RP2350 Coprocessor"
 default n
 depends on SOC_SERIES_RP2350
+
 # Mandatory dependency for drivers using DT_INST_ macros
 select ZEHPHYR_DT_INST_COMPAT_rp_rp2350_coprocessor
 
 if RP2350_COPROCESSOR
 
 config RP2350_COPROCESSOR_LOG_LEVEL
-int "Log level for RP2350 IP FIFO"
+int "Log level for RP2350 Coprocessor"
 default 3
 range 0 4
 

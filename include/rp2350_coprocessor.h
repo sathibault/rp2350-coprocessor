@@ -9,8 +9,13 @@
 #include <stdint.h>
 #include <errno.h>
 #include <zephyr/device.h>
-#include <zephyr/syscall.h> // Include for __syscall
 
+typedef void (*coprocessor_entry_t)(void);
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+  
 /**
  * @brief Push a 32-bit word onto the IP FIFO.
  *
@@ -37,6 +42,8 @@ __syscall int rp2350_coprocessor_push(const struct device *dev, uint32_t data);
  */
 __syscall int rp2350_coprocessor_pop(const struct device *dev, uint32_t *data);
 
+__syscall int rp2350_coprocessor_launch(const struct device *dev, coprocessor_entry_t entry);
+
 /**
  * @brief IP FIFO driver API structure.
  *
@@ -47,6 +54,10 @@ struct rp2350_coprocessor_driver_api {
     int (*pop)(const struct device *dev, uint32_t *data);
     // Add other API functions here (e.g., enabling interrupts)
 };
+
+#ifdef __cplusplus
+}
+#endif
 
 #include <zephyr/syscalls/rp2350_coprocessor.h>
 
